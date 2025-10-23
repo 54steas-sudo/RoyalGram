@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RoyalGram</title>
+<style>
+body { font-family: 'Courier New', monospace; background-color:#fffaf0; color:#333; margin:0; padding:0; }
+header { background-color:#ffd1dc; text-align:center; padding:15px; font-size:24px; font-weight:bold; }
+section { display:none; padding:15px; }
+button { background-color:#cce7ff; border:none; padding:10px 20px; margin:5px; font-size:16px; cursor:pointer; border-radius:8px; }
+button:hover { background-color:#99d1ff; }
+.post, .chat-message, .friend-request { border:1px solid #ccc; padding:8px; margin:8px 0; border-radius:8px; background-color:#fefefe; }
+.chat-message img, .post img { display:block; margin-top:5px; max-width:100px; max-height:100px; }
+input, textarea, select { padding:6px; margin:4px 0; width:100%; box-sizing:border-box; }
+canvas { display:none; }
+</style>
+</head>
+<body>
+
+<header>👑 RoyalGram 👑</header>
+
+<section id="loginSection">
+  <h2>Welcome to RoyalGram!</h2>
+  <input type="text" id="usernameInput" placeholder="Username">
+  <input type="password" id="passwordInput" placeholder="Password (≥3 numbers)">
+  <button onclick="login()">Login / Sign Up</button>
+</section>
+
+<section id="menuSection">
+  <button onclick="showSection('feedSection')">Feed</button>
+  <button onclick="showSection('chatSection')">Chat</button>
+  <button onclick="showSection('postSection')">Post</button>
+  <button onclick="showSection('friendsSection')">Friends</button>
+</section>
+
+<section id="feedSection"><h3>Royal Feed</h3><div id="postsContainer"></div></section>
+
+<section id="chatSection">
+  <h3>Chat with Friend</h3>
+  <select id="friendSelect" onchange="loadFriendChat()"></select>
+  <div id="chatContainer" style="max-height:300px; overflow-y:auto;"></div>
+  <textarea id="chatInput" placeholder="Type your message"></textarea>
+  <input type="file" id="chatImageInput" accept="image/*">
+  <button onclick="sendChat()">Send</button>
+</section>
+
+<section id="postSection">
+  <h3>Create Post</h3>
+  <input type="file" id="postImageInput" accept="image/*"><br>
+  <textarea id="captionInput" placeholder="Caption"></textarea><br>
+  <button onclick="createPost()">Post</button>
+</section>
+
+<section id="friendsSection">
+  <h3>Friends & Requests</h3>
+  <input type="text" id="friendUsernameInput" placeholder="Add friend by username">
+  <button onclick="sendFriendRequest()">Send Friend Request</button>
+  <h4>Pending Requests:</h4><div id="friendRequestsContainer"></div>
+  <h4>Your Friends:</h4><div id="friendsContainer"></div>
+</section>
+
+<canvas id="canvas"></canvas>
+
+<!-- Firebase compat scripts -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+
+<script>
+// ===============================
+// FIREBASE CONFIG
+// ===============================
+const firebaseConfig = {
+  apiKey: "AIzaSyDdpJpBE2vN1dHHoWqgB7BLsOxjZtxvY08",
+  authDomain: "samis-royalgram.firebaseapp.com",
+  databaseURL: "https://samis-royalgram-default-rtdb.firebaseio.com",
+  projectId: "samis-royalgram",
+  storageBucket: "samis-royalgram.appspot.com",
+  messagingSenderId: "809729162055",
+  appId: "1:809729162055:web:f3554e76b1312c42c9aa62"
+};
+
+// ===============================
+// INITIALIZE FIREBASE
+// ===============================
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+
+// ===============================
+// APP VARIABLES
+// ===============================
+let username='', friendsList=[], currentFriend='';
+
+// ===============================
+// HELPERS
+// ===============================
+function showSection(id){
+  ['feedSection','chatSection','postSection','friendsSection'].forEach(s=>document.getElementById(s).style.display='none');
+  document.getElementById(id).style.display='block';
+}
+
+function pixelateImage(file, callback, size=32){
+  const reader=new FileReader();
+  reader.onload=function(e){ 
+    const img=new Image(); 
+    img.onload=function(){ 
+      const canvas=document.getElementById('canvas'); 
+      canvas.width=size; canvas.height=size; 
+      canvas.getContext('2d').drawImage(img,0,0,size,size); 
+      callback(canvas.toDataURL()); 
+    }; 
+    img.src=e.target.result; 
+  };
+  reader.readAsDataURL(file);
+}
+
+// ===============================
+// LOGIN / SIGNUP
+// ===============================
+function login(){
+  const uname = document.getElementById('usernameInput').value.trim();
+  const pass = document.getElementById('passwordInput').value;
+  if(!uname || !pass){ alert("Enter username and password"); return; }
+  if((pass.match(/\d/g)||[]).length < 3){ alert("Password must have at least 3 numbers"); return; }
+
+  const userRef = db.ref('users/' + uname);
+  userRef.get().then(snap=>{
+    if(snap.exists()){
+      if(snap.val().password !== pass){ alert("Incorrect password"); return; }
+      username = uname;
+      enterApp();
+    } else {
+      userRef.set({ password: pass, friends: {}, friendRequests: {} });
+      alert("Account created successfully!");
+      username = uname;
+      enterApp();
+    }
+  });
+}
+
+// ===============================
+// ENTER APP
+// ===============================
+function enterApp(){
+  document.getElementById('loginSection').style.display='none';
+  document.getElementById('menuSection').style.display='block';
+  showSection('feedSection'); 
+  loadFriends(); 
+  loadPosts(); 
+  updateFriendSelect();
+}
+
+// ===============================
+// FRIENDS
+// ===============================
+function sendFriendRequest(){
+  const f = document.getElementById('friendUsernameInput').value.trim();
+  if(!f || f===username){ alert("Invalid username"); return; }
+  db.ref('users/'+f).get().then(snap=>{
+    if(!snap.exists()){ alert("User not found"); return; }
+    db.ref('users/'+f+'/friendRequests/'+username).set(true);
+    alert("Friend request sent!"); 
+    document.getElementById('friendUsernameInput').value='';
+  });
+}
+
+function loadFriends(){
+  db.ref('users/'+username+'/friendRequests').on('value',snap=>{
+    const c=document.getElementById('friendRequestsContainer'); c.innerHTML='';
+    const reqs=snap.val(); 
+    if(reqs){ Object.keys(reqs).forEach(r=>{
+      const div=document.createElement('div'); div.className='friend-request'; 
+      div.innerHTML=`${r} <button onclick="acceptFriend('${r}')">Accept</button>`; 
+      c.appendChild(div); 
+    }); 
+  });
+  db.ref('users/'+username+'/friends').on('value',snap=>{
+    const c=document.getElementById('friendsContainer'); c.innerHTML=''; friendsList=[]; 
+    const fns=snap.val();
+    if(fns){ Object.keys(fns).forEach(f=>{
+      friendsList.push(f); 
+      const div=document.createElement('div'); div.innerText=f; 
+      c.appendChild(div); 
+    }); }
+    updateFriendSelect();
+  });
+}
+
+function acceptFriend(f){
+  db.ref('users/'+username+'/friends/'+f).set(true);
+  db.ref('users/'+f+'/friends/'+username).set(true);
+  db.ref('users/'+username+'/friendRequests/'+f).remove();
+  alert(f+" is now your friend!");
+}
+
+function updateFriendSelect(){
+  const sel=document.getElementById('friendSelect'); sel.innerHTML='';
+  friendsList.forEach(f=>{
+    const opt=document.createElement('option'); opt.value=f; opt.text=f; sel.appendChild(opt);
+  });
+  if(friendsList.length>0){ currentFriend=friendsList[0]; loadFriendChat(); }
+}
+
+// ===============================
+// POSTS
+// ===============================
+function createPost(){
+  const file=document.getElementById('postImageInput').files[0]; 
+  const cap=document.getElementById('captionInput').value;
+  if(!file){ alert("Choose an image"); return; }
+  pixelateImage(file,imgData=>{
+    db.ref('posts').push({user:username, caption:cap, image:imgData, timestamp:Date.now()}); 
+    document.getElementById('captionInput').value=''; 
+    document.getElementById('postImageInput').value='';
+  });
+}
+
+function loadPosts(){
+  const c=document.getElementById('postsContainer');
+  db.ref('posts').on('value',snap=>{
+    c.innerHTML=''; const posts=snap.val();
+    if(posts){ 
+      Object.keys(posts).sort((a,b)=>posts[b].timestamp-posts[a].timestamp).forEach(k=>{
+        const p=posts[k]; 
+        if(friendsList.includes(p.user)||p.user===username){
+          const div=document.createElement('div'); div.className='post'; 
+          div.innerHTML=`<strong>${p.user}</strong><br><img src="${p.image}"><br>${p.caption}`; 
+          c.appendChild(div); 
+        } 
+      }); 
+    }
+  });
+}
+
+// ===============================
+// CHAT
+// ===============================
+function loadFriendChat(){
+  currentFriend=document.getElementById('friendSelect').value;
+  const chatC=document.getElementById('chatContainer'); chatC.innerHTML='';
+  if(!currentFriend) return;
+  db.ref('chat').off();
+  db.ref('chat').on('value',snap=>{
+    chatC.innerHTML=''; const chats=snap.val(); if(!chats) return;
+    Object.keys(chats).forEach(k=>{
+      const chat=chats[k]; 
+      if(chat.participants && chat.participants[username] && chat.participants[currentFriend]){
+        const msgs=chat.messages; if(!msgs) return;
+        Object.keys(msgs).forEach(m=>{
+          const msg=msgs[m]; const div=document.createElement('div'); div.className='chat-message'; 
+          div.innerHTML=`<strong>${msg.user}:</strong> ${msg.text}`;
+          if(msg.image){ const im=document.createElement('img'); im.src=msg.image; div.appendChild(im); }
+          chatC.appendChild(div);
+        });
+      }
+    });
+    chatC.scrollTop = chatC.scrollHeight;
+  });
+}
+
+function sendChat(){
+  const text=document.getElementById('chatInput').value.trim();
+  const file=document.getElementById('chatImageInput').files[0];
+  if(!text && !file){ alert("Enter message or choose image"); return; }
+  if(!currentFriend){ alert("Select a friend"); return; }
+
+  const sendMessage=(imgData=null)=>{
+    const chatsRef=db.ref('chat');
+    chatsRef.get().then(snap=>{
+      let chatId=null;
+      const chats=snap.val()||{};
+      Object.keys(chats).forEach(k=>{
+        const c=chats[k];
+        if(c.participants && c.participants[username] && c.participants[currentFriend]) chatId=k;
+      });
+      if(!chatId){
+        chatId=db.ref('chat').push().key;
+        db.ref('chat/'+chatId+'/participants').set({[username]:true, [currentFriend]:true});
+      }
+      const msgRef=db.ref('chat/'+chatId+'/messages').push();
+      msgRef.set({user:username,text:text,image:imgData||null,timestamp:Date.now()});
+      document.getElementById('chatInput').value='';
+      document.getElementById('chatImageInput').value='';
+    });
+  };
+
+  if(file){
+    pixelateImage(file,sendMessage);
+  } else sendMessage();
+}
+</script>
+
+</body>
+</html>
